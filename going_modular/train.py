@@ -1,62 +1,104 @@
-"""
-Trains a PyTorch image classification model using device-agnostic code.
-"""
+from typing import Dict, List
+from tqdm.auto import tqdm
 
-import os
-import torch
-import data_setup, engine, model_builder, utils
+from going_modular.going_modular.engine import train_step, test_step
 
-from torchvision import transforms
+# Import train() function from: 
+# https://github.com/mrdbourke/pytorch-deep-learning/blob/main/going_modular/going_modular/engine.py
+def train(model: torch.nn.Module, 
+          train_dataloader: torch.utils.data.DataLoader, 
+          test_dataloader: torch.utils.data.DataLoader, 
+          optimizer: torch.optim.Optimizer,
+          loss_fn: torch.nn.Module,
+          epochs: int,
+          device: torch.device) -> Dict[str, List]:
+    """Trains and tests a PyTorch model.
 
-# Setup hyperparameters
-NUM_EPOCHS = 5
-BATCH_SIZE = 32
-HIDDEN_UNITS = 10
-LEARNING_RATE = 0.001
+    Passes a target PyTorch models through train_step() and test_step()
+    functions for a number of epochs, training and testing the model
+    in the same epoch loop.
 
-# Setup directories
-train_dir = "data/pizza_steak_sushi/train"
-test_dir = "data/pizza_steak_sushi/test"
+    Calculates, prints and stores evaluation metrics throughout.
 
-# Setup target device
-device = "cuda" if torch.cuda.is_available() else "cpu"
+    Args:
+      model: A PyTorch model to be trained and tested.
+      train_dataloader: A DataLoader instance for the model to be trained on.
+      test_dataloader: A DataLoader instance for the model to be tested on.
+      optimizer: A PyTorch optimizer to help minimize the loss function.
+      loss_fn: A PyTorch loss function to calculate loss on both datasets.
+      epochs: An integer indicating how many epochs to train for.
+      device: A target device to compute on (e.g. "cuda" or "cpu").
+      
+    Returns:
+      A dictionary of training and testing loss as well as training and
+      testing accuracy metrics. Each metric has a value in a list for 
+      each epoch.
+      In the form: {train_loss: [...],
+                train_acc: [...],
+                test_loss: [...],
+                test_acc: [...]} 
+      For example if training for epochs=2: 
+              {train_loss: [2.0616, 1.0537],
+                train_acc: [0.3945, 0.3945],
+                test_loss: [1.2641, 1.5706],
+                test_acc: [0.3400, 0.2973]} 
+    """
+    # Create empty results dictionary
+    results = {"train_loss": [],
+               "train_acc": [],
+               "test_loss": [],
+               "test_acc": []
+    }
 
-# Create transforms
-data_transform = transforms.Compose([
-  transforms.Resize((64, 64)),
-  transforms.ToTensor()
-])
+    # Loop through training and testing steps for a number of epochs
+    for epoch in tqdm(range(epochs)):
+        train_loss, train_acc = train_step(model=model,
+                                           dataloader=train_dataloader,
+                                           loss_fn=loss_fn,
+                                           optimizer=optimizer,
+                                           device=device)
+        test_loss, test_acc = test_step(model=model,
+                                        dataloader=test_dataloader,
+                                        loss_fn=loss_fn,
+                                        device=device)
 
-# Create DataLoaders with help from data_setup.py
-train_dataloader, test_dataloader, class_names = data_setup.create_dataloaders(
-    train_dir=train_dir,
-    test_dir=test_dir,
-    transform=data_transform,
-    batch_size=BATCH_SIZE
-)
+        # Print out what's happening
+        print(
+          f"Epoch: {epoch+1} | "
+          f"train_loss: {train_loss:.4f} | "
+          f"train_acc: {train_acc:.4f} | "
+          f"test_loss: {test_loss:.4f} | "
+          f"test_acc: {test_acc:.4f}"
+        )
 
-# Create model with help from model_builder.py
-model = model_builder.TinyVGG(
-    input_shape=3,
-    hidden_units=HIDDEN_UNITS,
-    output_shape=len(class_names)
-).to(device)
+        # Update results dictionary
+        results["train_loss"].append(train_loss)
+        results["train_acc"].append(train_acc)
+        results["test_loss"].append(test_loss)
+        results["test_acc"].append(test_acc)
 
-# Set loss and optimizer
-loss_fn = torch.nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters(),
-                             lr=LEARNING_RATE)
+        ### New: Experiment tracking ###
+        # Add loss results to SummaryWriter
+        writer.add_scalars(main_tag="Loss", 
+                           tag_scalar_dict={"train_loss": train_loss,
+                                            "test_loss": test_loss},
+                           global_step=epoch)
 
-# Start training with help from engine.py
-engine.train(model=model,
-             train_dataloader=train_dataloader,
-             test_dataloader=test_dataloader,
-             loss_fn=loss_fn,
-             optimizer=optimizer,
-             epochs=NUM_EPOCHS,
-             device=device)
+        # Add accuracy results to SummaryWriter
+        writer.add_scalars(main_tag="Accuracy", 
+                           tag_scalar_dict={"train_acc": train_acc,
+                                            "test_acc": test_acc}, 
+                           global_step=epoch)
+        
+        # Track the PyTorch model architecture
+        writer.add_graph(model=model, 
+                         # Pass in an example input
+                         input_to_model=torch.randn(32, 3, 224, 224).to(device))
+    
+    # Close the writer
+    writer.close()
+    
+    ### End new ###
 
-# Save the model with help from utils.py
-utils.save_model(model=model,
-                 target_dir="models",
-                 model_name="05_going_modular_script_mode_tinyvgg_model.pth")
+    # Return the filled results at the end of the epochs
+    return results
